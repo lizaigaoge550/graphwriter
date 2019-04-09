@@ -158,6 +158,34 @@ class MultiHeadAttention(nn.Module):
         self.bn = nn.BatchNorm1d(num_units)
         self.ln = nn.LayerNorm(num_units)
 
-    def forward(self, query, keys, maks=None):
+    def forward(self, query, keys, mask=None):
+        Q = self.query_layer(query)
+        K = self.key_layer(keys)
+        V = self.value_layer(keys)
 
+        chunk_size = int(self._num_units / self._h)
+        Q = torch.cat(Q.split(split_size=chunk_size, dim=2), dim=0)
+        K = torch.cat(K.split(split_size=chunk_size, dim=2), dim=0)
+        V = torch.cat(V.split(split_size=chunk_size, dim=2), dim=0)
+
+        # calculate QK^T
+        attention = torch.matmul(Q, K.transpose(1, 2))
+        # normalize with sqrt(dk)
+        attention = attention / torch.sqrt(self._key_dim).cuda()
+
+        if mask is not None:
+            mask = mask.repeat(self._h, 1, 1)
+            attention.masked_fill_(mask, -float('inf'))
+        attention = F.softmax(attention, dim=-1)
+        # apply dropout
+        attention = F.dropout(attention, self._dropout_p)
+        # multiplyt it with V
+        attention = torch.matmul(attention, V)
+        # convert attention back to its input original size
+        restore_chunk_size = int(attention.size(0) / self._h)
+        attention = torch.cat(
+            attention.split(split_size=restore_chunk_size, dim=0), dim=2)
+        # residual connection
+        attention += query
+        return attention
 
